@@ -1,0 +1,61 @@
+services:
+  # Main FastAPI service
+  sandbox-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.service
+    container_name: llm-sandbox-service
+    ports:
+      - "8000:8000"
+    environment:
+      # Service configuration
+      - SERVICE_HOST=0.0.0.0
+      - SERVICE_PORT=8000
+      - LOG_LEVEL=info
+
+      # Sandbox configuration
+      - SANDBOX_IMAGE=python:3.12-slim
+      - SANDBOX_POOL_SIZE=20
+      - SANDBOX_MIN_POOL=5
+      - SANDBOX_IDLE_TIMEOUT=300
+      - SANDBOX_WORKSPACE=/workspace
+      - SANDBOX_DEFAULT_TIMEOUT=1800
+
+      # Docker configuration
+      - DOCKER_HOST=unix:///var/run/docker.sock
+
+      # Security settings
+      - SANDBOX_NETWORK_MODE=none
+      - SANDBOX_READ_ONLY=false
+      - SANDBOX_CAP_DROP=ALL
+    volumes:
+      # Mount Docker socket for container management
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persistent workspace directories (one per user pool)
+      - ./workspace:/workspace
+      # Additional workspace for multi-user isolation
+      - ./user_workspaces:/user_workspaces
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+networks:
+  default:
+    name: llm-sandbox-network
+    driver: bridge
+
+volumes:
+  workspace:
+    name: llm-sandbox-workspace
+  user_workspaces:
+    name: llm-sandbox-user-workspaces

@@ -1,0 +1,90 @@
+# Multi-language sandbox image for llm-sandbox
+# Built on top of python:3.12-slim with additional language runtimes
+
+FROM python:3.12-slim
+
+# Prevent Python from writing pyc files and buffering stdout/stderr
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install system dependencies and common tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Shell and basic tools
+    bash \
+    coreutils \
+    curl \
+    wget \
+    vim \
+    git \
+    rsync \
+    unzip \
+    zip \
+    jq \
+    tree \
+    # Node.js for JavaScript/TypeScript
+    nodejs \
+    npm \
+    # Go
+    golang-go \
+    # Java
+    default-jdk \
+    maven \
+    # C/C++ build tools
+    gcc \
+    g++ \
+    make \
+    # Ruby
+    ruby \
+    ruby-dev \
+    # Rust (minimal)
+    cargo \
+    # R and statistics
+    r-base \
+    r-base-dev \
+    # Clean up
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Create workspace directory
+RUN mkdir -p /workspace && chmod 755 /workspace
+
+# Install Python packages
+RUN pip install --no-cache-dir \
+    numpy \
+    pandas \
+    requests \
+    matplotlib \
+    scipy \
+    scikit-learn \
+    Pillow \
+    pyyaml \
+    tqdm \
+    ipython
+
+# Install Node.js packages globally
+RUN npm install -g \
+    typescript \
+    ts-node \
+    neovim
+
+# Set Go environment
+ENV GOPATH=/go
+ENV PATH=$PATH:/usr/local/go/bin:$GOPATH/bin
+
+# Create non-root user for security
+RUN useradd -m -s /bin/bash sandbox && \
+    chown -R sandbox:sandbox /workspace
+
+USER sandbox
+
+# Default working directory
+WORKDIR /workspace
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import sys; sys.exit(0)"
+
+# Default command - keep container running
+CMD ["python", "-c", "import time; print('Sandbox ready'); time.sleep(3600)"]
