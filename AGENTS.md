@@ -14,24 +14,27 @@ Multi-user, multi-session code execution service using llm-sandbox as the lightw
 
 ## Current State
 
-**Phase**: Testing - Docker Integration Testing
+**Phase**: MVP Complete - Committed
 
 **Completed**:
-- ✅ Core adapter (LLMSandboxBackend) with execute/upload/download
+- ✅ Core adapter (LLMSandboxBackend) with execute/upload/download/ls/read/write/edit/grep/glob
 - ✅ FastAPI service with basic multi-user support
 - ✅ Container pool for pre-warming
-- ✅ Docker architecture (Dockerfile, docker-compose.yml)
-- ✅ Custom multi-language sandbox image
+- ✅ Docker architecture (Dockerfile.service/sandbox, docker-compose.yml)
+- ✅ Custom multi-language sandbox image (docker/Dockerfile.sandbox)
+- ✅ Documentation (README.md, AGENTS.md, EVALUATION_REPORT.md)
+- ✅ Level 1 infrastructure test file
+- ✅ MVP committed to git
 
 **In Progress**:
-- 🔄 Level 1-6 Docker integration testing
+- 🔄 Level 1 infrastructure testing - healthcheck fixed, service running
 
 **TODO**:
 - [x] Complete all SandboxBackendProtocol methods
 - [x] Workspace persistence via bind mount
 - [x] Custom sandbox image with multi-language support
 - [x] Docker Compose deployment
-- [ ] Level 1: Infrastructure testing
+- [ ] Level 1: Infrastructure testing (in progress)
 - [ ] Level 2: API endpoint testing
 - [ ] Level 3: File operations testing
 - [ ] Level 4: Protocol completeness testing
