@@ -6,7 +6,7 @@
 
 | 特性 | 说明 |
 |------|------|
-| **会话隔离** | 每个 `thread_id` 对应独立 Sandbox |
+| **会话隔离** | 每个 `thread_id` 对应独立 Sandbox Pool |
 | **文件持久化** | bind mount 宿主机目录到容器 `/workspace` |
 | **容器预热** | Container Pool 预创建容器，加速响应 |
 | **多语言支持** | Python, Node.js, Go, Java, C++, Shell 等 |
@@ -31,7 +31,7 @@
 │  │   │  + llm-     │    │       ▲           ▲       ▲      │   │  │
 │  │   │  sandbox    │    │       │           │       │      │   │  │
 │  │   │  PoolMgr    │    │  ┌────┴───────────┴───────┴────┐ │   │  │
-│  │   └──────────────┘    │  │   /user_workspaces (bind)  │ │   │  │
+│  │ └──────────────┘    │  │   /user_workspaces (bind)  │ │   │  │
 │  │          │             │  │   /workspace (bind)         │ │   │  │
 │  └──────────┼─────────────┼──┴────────────────────────────┴─┼──┘  │
 │             │             └─────────────────────────────────────┼──┘  │
@@ -55,20 +55,42 @@ llm-sandbox-deepagents-demo/
 ├── llm_sandbox_deepagents_adapter/
 │   ├── __init__.py
 │   ├── llm_sandbox_backend.py  # 核心适配器 (SandboxBackendProtocol)
-│   ├── demos/
-│   │   └── sandbox_service.py   # FastAPI 服务入口
-│   └── tests/
-│       ├── test_protocol.py     # 协议完整性测试
-│       └── test_multi_user.py  # 多用户并发测试
+│   └── demos/
+│       └── sandbox_service.py   # FastAPI 服务入口
+├── tests/
+│   ├── test_async.py           # 异步 API + 协议完整性测试
+│   ├── test_concurrent_multi_user.py  # 多用户多线程并发测试
+│   └── test_integration/       # DeepAgents 集成测试
+│       ├── __init__.py
+│       ├── conftest.py         # .env 加载、fixtures
+│       ├── test_agent_execute.py  # 单轮执行测试
+│       └── test_agent_multiturn.py # 多轮状态保持测试
 ├── workspace/                  # 共享工作空间 (bind mount)
 ├── user_workspaces/            # 用户隔离工作空间
 ├── docker-compose.yml          # 生产部署配置
 ├── pyproject.toml
+├── env.example                 # 环境变量模板
 ├── EVALUATION_REPORT.md
 └── README.md
 ```
 
 ## 快速开始
+
+### 前置条件
+
+```bash
+# 1. 配置环境变量
+cp env.example .env
+# 编辑 .env 填入你的 API key
+# 必须变量: OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
+
+# 2. 安装依赖
+cd llm-sandbox-deepagents-demo
+uv sync
+
+# 3. 激活虚拟环境
+source .venv/bin/activate
+```
 
 ### 方式一: Docker Compose 部署 (推荐生产环境)
 
@@ -89,17 +111,10 @@ docker compose logs -f sandbox-service
 ### 方式二: 开发模式
 
 ```bash
-# 1. 安装依赖
-cd llm-sandbox-deepagents-demo
-uv sync
+# 1. 启动 FastAPI 服务
+python llm_sandbox_deepagents_adapter/demos/sandbox_service.py
 
-# 2. 激活虚拟环境
-source .venv/bin/activate
-
-# 3. 启动 FastAPI 服务
-python demos/sandbox_service.py
-
-# 4. 另一个终端运行压测
+# 2. 另一个终端运行压测
 python tests/pressure_test.py --tests startup reuse
 ```
 
@@ -131,6 +146,9 @@ python tests/pressure_test.py --tests startup reuse
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
+| `OPENAI_API_KEY` | - | **必需**。LLM API Key |
+| `OPENAI_BASE_URL` | - | **必需**。LLM API Base URL |
+| `OPENAI_MODEL` | - | **必需**。模型名称 |
 | `SANDBOX_IMAGE` | `llm-sandbox-multilang:latest` | 沙箱容器镜像 |
 | `SANDBOX_POOL_SIZE` | `20` | 最大容器池大小 |
 | `SANDBOX_MIN_POOL` | `5` | 最小预热容器数 |
@@ -173,81 +191,34 @@ deploy:
 
 测试按从简单到复杂的层级进行，确保在完整 Docker 架构上验证。
 
-### 测试层级
-
-```
-Level 1: 基础设施测试
-├── docker-compose 能启动
-├── 服务健康检查
-└── 网络连通性
-
-Level 2: API 端点测试
-├── /health 健康检查
-├── /execute 代码执行
-└── /stats 统计接口
-
-Level 3: 文件操作测试
-├── /write_file 写文件
-├── /read_file 读文件
-├── /upload_files 上传
-└── /download_files 下载
-
-Level 4: 协议完整性测试
-├── ls 文件列表
-├── edit 文件编辑
-├── grep 内容搜索
-└── glob 模式匹配
-
-Level 5: 多用户隔离测试
-├── 用户间文件隔离
-├── 用户间容器隔离
-└── 并发请求隔离
-
-Level 6: 持久化测试
-├── 容器重启后文件保留
-├── 容器复用后状态保留
-└── bind mount 验证
-```
-
 ### 测试文件
 
 ```
 tests/
-├── test_level1_infrastructure.py   # Level 1: 基础设施
-├── test_level2_api.py              # Level 2: API 端点
-├── test_level3_file_ops.py          # Level 3: 文件操作
-├── test_level4_protocol.py          # Level 4: 协议完整性
-├── test_level5_multi_user.py        # Level 5: 多用户隔离
-├── test_level6_persistence.py       # Level 6: 持久化
+├── test_async.py                    # 异步 API + 协议完整性测试
+├── test_concurrent_multi_user.py    # 多用户多线程并发测试
+├── test_integration/               # DeepAgents 集成测试 (真实 LLM)
+│   ├── conftest.py                 # .env 加载、fixtures
+│   ├── test_agent_execute.py       # 单轮执行测试
+│   └── test_agent_multiturn.py     # 多轮状态保持测试
 └── pressure_test.py                 # 性能压力测试
 ```
 
 ### 运行测试
 
 ```bash
-# Level 1: docker-compose 启动测试
-pytest tests/test_level1_infrastructure.py -v
+# 协议 + 异步 API 测试 (快，无需 LLM)
+pytest tests/test_async.py -v
 
-# Level 2: API 端点测试
-pytest tests/test_level2_api.py -v
+# 多用户并发测试 (快，无需 LLM)
+pytest tests/test_concurrent_multi_user.py -v
 
-# Level 3: 文件操作测试
-pytest tests/test_level3_file_ops.py -v
+# DeepAgents 集成测试 (慢，真实 LLM 调用)
+# 需要先配置 .env (OPENAI_API_KEY 等)
+pytest tests/test_integration/ -v -s
 
-# Level 4: 协议完整性测试
-pytest tests/test_level4_protocol.py -v
-
-# Level 5: 多用户隔离测试
-pytest tests/test_level5_multi_user.py -v
-
-# Level 6: 持久化测试
-pytest tests/test_level6_persistence.py -v
-
-# 运行所有级别
-pytest tests/test_level*.py -v
-
-# 性能压力测试
-python tests/pressure_test.py --tests startup reuse concurrent
+# 运行全部测试
+pytest tests/ -v
 ```
 
 ### 测试前置条件
@@ -261,6 +232,11 @@ docker compose up -d
 
 # 3. 确认服务就绪
 curl http://localhost:8000/health
+
+# 4. 运行集成测试 (需配置 .env)
+cp env.example .env
+# 编辑 .env 填入 OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
+pytest tests/test_integration/ -v
 ```
 
 ## 自定义配置
@@ -290,7 +266,7 @@ docker compose up -d
 
 ### 异步方法
 
-除了同步方法外，backend 还支持异步方法，适合在 async 代码中使用：
+所有协议方法都有对应的 `a` 前缀异步版本：
 
 ```python
 import asyncio
@@ -298,24 +274,25 @@ from llm_sandbox_deepagents_adapter import get_factory
 
 async def demo_async():
     factory = get_factory()
-    backend = factory.create_backend()
-    
+    backend = factory.create_backend(pool_key="my-session")
+
     # 异步执行命令
-    result = await backend.async_execute("print('hello async')")
+    result = await backend.aexecute("print('hello async')")
     print(result.output)
-    
+
     # 异步读写文件
-    await backend.async_write("/workspace/test.txt", "Hello World")
-    read_result = await backend.async_read("/workspace/test.txt")
+    await backend.awrite("/workspace/test.txt", "Hello World")
+    read_result = await backend.aread("/workspace/test.txt")
     print(read_result.file_data.content)
-    
+
     # 异步编辑文件
-    edit_result = await backend.async_edit(
-        "/workspace/test.txt",
-        "World",
-        "Async World"
-    )
-    
+    await backend.aedit("/workspace/test.txt", "World", "Async World")
+
+    # 异步文件搜索
+    grep_result = await backend.agrep("/workspace", "async")
+    for match in grep_result.matches:
+        print(f"{match.file}:{match.line}: {match.content}")
+
     backend.close()
 
 asyncio.run(demo_async())
@@ -327,12 +304,13 @@ asyncio.run(demo_async())
 
 ```python
 # Sync 上下文管理器
+factory = get_factory()
 with factory.create_backend() as backend:
     result = backend.execute("print('sync')")
 
 # Async 上下文管理器
 async with factory.create_backend() as backend:
-    result = await backend.async_execute("print('async')")
+    result = await backend.aexecute("print('async')")
 ```
 
 ### 错误分类与重试
@@ -349,11 +327,9 @@ from llm_sandbox_deepagents_adapter import (
 
 @async_retry(max_attempts=3, base_delay=0.5)
 async def unreliable_operation():
-    # 可能会超时或资源不足的操作
-    result = await backend.async_execute("some_command")
+    result = await backend.aexecute("some_command")
     return result
 
-# 手动分类错误
 try:
     result = backend.execute("command")
 except Exception as e:
@@ -366,7 +342,6 @@ except Exception as e:
 通过 `get_stats()` 获取执行统计：
 
 ```python
-# 获取统计信息
 stats = backend.get_stats()
 print(f"总执行次数: {stats['total_executions']}")
 print(f"成功率: {stats['success_rate']}%")
@@ -377,40 +352,88 @@ print(f"资源耗尽次数: {stats['resource_exhausted_count']}")
 
 ## DeepAgents 集成
 
-### 方式一: 直接作为 Tool 使用
+### 集成方式
+
+使用 `create_deep_agent(backend=...)` 方式集成：
 
 ```python
+import os
+from langchain_openai import ChatOpenAI
 from deepagents import create_deep_agent
-from llm_sandbox_deepagents_adapter import LLMSandboxBackend, LLMSandboxBackendFactory
-
-# 获取共享的 backend
-factory = get_factory()
-backend = factory.create_backend(pool_key="default")
-
-# 创建 Agent
-agent = create_deep_agent(
-    model=init_chat_model("openai:gpt-4o"),
-    tools=[backend],  # 直接作为 Tool
+from llm_sandbox_deepagents_adapter import (
+    LLMSandboxBackendConfig,
+    get_factory,
 )
+
+# 1. 初始化 LLM
+llm = ChatOpenAI(
+    model=os.getenv("OPENAI_MODEL", "gpt-4o"),
+    api_key=os.getenv("OPENAI_API_KEY"),
+    base_url=os.getenv("OPENAI_BASE_URL"),
+)
+
+# 2. 创建 backend (每个 thread_id 独立 pool)
+config = LLMSandboxBackendConfig(
+    enable_prewarming=True,
+    default_timeout=30,
+    idle_timeout=300.0,
+    max_pool_size=5,
+    min_pool_size=2,
+)
+factory = get_factory()
+backend = factory.create_backend(pool_key="my-thread", config=config)
+
+# 3. 创建 Agent (backend= 是正确方式)
+agent = create_deep_agent(
+    model=llm,
+    backend=backend,     # ✅ 正确：用 backend= 参数
+    debug=False,
+)
+
+# 4. 使用 agent
+result = await agent.ainvoke(
+    {"messages": ["Write fibonacci for n=10 and print the result"]},
+    config={"configurable": {"thread_id": "my-thread"}},
+)
+print(result["messages"][-1].content)
 ```
 
-### 方式二: 作为 SandboxBackend 使用
+### 会话隔离
+
+`thread_id` 即 `pool_key`，确保不同用户/对话的 sandbox 完全隔离：
 
 ```python
-from deepagents.backends.sandbox import BaseSandbox
+# 用户 A 的会话
+backend_a = factory.create_backend(pool_key="user-a-session-1")
 
-class LLMSandboxBackendWrapper(BaseSandbox):
-    def __init__(self, backend):
-        self._backend = backend
+# 用户 B 的会话
+backend_b = factory.create_backend(pool_key="user-b-session-1")
 
-    @property
-    def id(self):
-        return self._backend.id
+# 各自独立 container pool，互不干扰
+```
 
-    def execute(self, command, *, timeout=None):
-        return self._backend.execute(command, timeout=timeout)
+### 多用户多线程并发
 
-    # ... 实现其他协议方法
+多个用户并发使用时，每个用户的 thread_id 映射到独立 pool：
+
+```python
+async def handle_user(user_id: str, thread_id: str):
+    factory = get_factory()
+    backend = factory.create_backend(pool_key=thread_id)
+    agent = create_deep_agent(model=llm, backend=backend)
+
+    result = await agent.ainvoke(
+        {"messages": [f"Hello from {user_id}"]},
+        config={"configurable": {"thread_id": thread_id}},
+    )
+    return result
+
+# 并发处理多个用户
+await asyncio.gather(
+    handle_user("alice", "alice-thread-1"),
+    handle_user("bob", "bob-thread-1"),
+    handle_user("charlie", "charlie-thread-1"),
+)
 ```
 
 ## 性能基准
