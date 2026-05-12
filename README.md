@@ -286,6 +286,95 @@ echo "SANDBOX_MIN_POOL=10" >> .env
 docker compose up -d
 ```
 
+## 异步支持
+
+### 异步方法
+
+除了同步方法外，backend 还支持异步方法，适合在 async 代码中使用：
+
+```python
+import asyncio
+from llm_sandbox_deepagents_adapter import get_factory
+
+async def demo_async():
+    factory = get_factory()
+    backend = factory.create_backend()
+    
+    # 异步执行命令
+    result = await backend.async_execute("print('hello async')")
+    print(result.output)
+    
+    # 异步读写文件
+    await backend.async_write("/workspace/test.txt", "Hello World")
+    read_result = await backend.async_read("/workspace/test.txt")
+    print(read_result.file_data.content)
+    
+    # 异步编辑文件
+    edit_result = await backend.async_edit(
+        "/workspace/test.txt",
+        "World",
+        "Async World"
+    )
+    
+    backend.close()
+
+asyncio.run(demo_async())
+```
+
+### 上下文管理器
+
+支持 sync 和 async 上下文管理器：
+
+```python
+# Sync 上下文管理器
+with factory.create_backend() as backend:
+    result = backend.execute("print('sync')")
+
+# Async 上下文管理器
+async with factory.create_backend() as backend:
+    result = await backend.async_execute("print('async')")
+```
+
+### 错误分类与重试
+
+内置错误分类和重试装饰器：
+
+```python
+from llm_sandbox_deepagents_adapter import (
+    TimeoutError,
+    ResourceExhaustedError,
+    async_retry,
+    classify_error,
+)
+
+@async_retry(max_attempts=3, base_delay=0.5)
+async def unreliable_operation():
+    # 可能会超时或资源不足的操作
+    result = await backend.async_execute("some_command")
+    return result
+
+# 手动分类错误
+try:
+    result = backend.execute("command")
+except Exception as e:
+    error_type = classify_error(e)
+    print(f"Got {error_type.__name__}: {e}")
+```
+
+### 监控指标
+
+通过 `get_stats()` 获取执行统计：
+
+```python
+# 获取统计信息
+stats = backend.get_stats()
+print(f"总执行次数: {stats['total_executions']}")
+print(f"成功率: {stats['success_rate']}%")
+print(f"平均执行时间: {stats['average_execution_time']}s")
+print(f"超时次数: {stats['timeout_count']}")
+print(f"资源耗尽次数: {stats['resource_exhausted_count']}")
+```
+
 ## DeepAgents 集成
 
 ### 方式一: 直接作为 Tool 使用

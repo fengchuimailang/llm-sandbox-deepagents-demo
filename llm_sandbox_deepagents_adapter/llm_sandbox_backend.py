@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
+import time
 import uuid
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field
+from functools import wraps
+from typing import TYPE_CHECKING, Any, Callable
 
 from llm_sandbox import SandboxSession
 
@@ -17,6 +20,127 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+# ============================================================================
+# Error Classification
+# ============================================================================
+
+class SandboxError(Exception):
+    """Base exception for sandbox operations."""
+    pass
+
+
+class TimeoutError(SandboxError):
+    """Operation timed out."""
+    pass
+
+
+class ResourceExhaustedError(SandboxError):
+    """Sandbox pool exhausted or resources unavailable."""
+    pass
+
+
+class SyntaxError(SandboxError):
+    """Code syntax error detected."""
+    pass
+
+
+class PermissionError(SandboxError):
+    """Permission denied for operation."""
+    pass
+
+
+class FileNotFoundError(SandboxError):
+    """File not found."""
+    pass
+
+
+class ExecutionError(SandboxError):
+    """General execution error."""
+    pass
+
+
+def classify_error(exc: Exception) -> type[SandboxError]:
+    """Classify an exception into a specific SandboxError type."""
+    error_msg = str(exc).lower()
+    
+    if "timeout" in error_msg or "timed out" in error_msg:
+        return TimeoutError
+    elif "pool" in error_msg or "resource" in error_msg or "exhaust" in error_msg:
+        return ResourceExhaustedError
+    elif "syntax" in error_msg or "parse" in error_msg or "invalid" in error_msg:
+        return SyntaxError
+    elif "permission" in error_msg or "denied" in error_msg or "access" in error_msg:
+        return PermissionError
+    elif "not found" in error_msg or "no such file" in error_msg:
+        return FileNotFoundError
+    else:
+        return ExecutionError
+
+
+# ============================================================================
+# Retry Decorator
+# ============================================================================
+
+def async_retry(
+    max_attempts: int = 3,
+    base_delay: float = 0.5,
+    max_delay: float = 10.0,
+    retry_on: tuple[type[Exception], ...] = (Exception,),
+):
+    """Async retry decorator with exponential backoff."""
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_attempts):
+                try:
+                    return await func(*args, **kwargs)
+                except retry_on as e:
+                    last_exception = e
+                    if attempt < max_attempts - 1:
+                        delay = min(base_delay * (2 ** attempt), max_delay)
+                        logger.warning(
+                            f"Retry {attempt + 1}/{max_attempts} for {func.__name__} "
+                            f"after {delay:.1f}s: {e}"
+                        )
+                        await asyncio.sleep(delay)
+            raise last_exception
+        return wrapper
+    return decorator
+
+
+def sync_retry(
+    max_attempts: int = 3,
+    base_delay: float = 0.5,
+    max_delay: float = 10.0,
+    retry_on: tuple[type[Exception], ...] = (Exception,),
+):
+    """Sync retry decorator with exponential backoff."""
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_attempts):
+                try:
+                    return func(*args, **kwargs)
+                except retry_on as e:
+                    last_exception = e
+                    if attempt < max_attempts - 1:
+                        delay = min(base_delay * (2 ** attempt), max_delay)
+                        logger.warning(
+                            f"Retry {attempt + 1}/{max_attempts} for {func.__name__} "
+                            f"after {delay:.1f}s: {e}"
+                        )
+                        time.sleep(delay)
+            raise last_exception
+        return wrapper
+    return decorator
+
+
+# ============================================================================
+# Configuration & Data Classes
+# ============================================================================
 
 @dataclass
 class LLMSandboxBackendConfig:
@@ -94,7 +218,47 @@ class GlobResult:
     error: str | None = None
 
 
+# ============================================================================
+# Statistics
+# ============================================================================
+
+@dataclass
+class SandboxStats:
+    """Statistics for sandbox operations."""
+    total_executions: int = 0
+    successful_executions: int = 0
+    failed_executions: int = 0
+    total_execution_time: float = 0.0
+    total_retries: int = 0
+    timeout_count: int = 0
+    resource_exhausted_count: int = 0
+    syntax_error_count: int = 0
+    permission_error_count: int = 0
+    file_not_found_count: int = 0
+    other_error_count: int = 0
+    
+    @property
+    def success_rate(self) -> float:
+        """Calculate success rate as a percentage."""
+        if self.total_executions == 0:
+            return 0.0
+        return (self.successful_executions / self.total_executions) * 100
+    
+    @property
+    def average_execution_time(self) -> float:
+        """Calculate average execution time in seconds."""
+        if self.total_executions == 0:
+            return 0.0
+        return self.total_execution_time / self.total_executions
+
+
+# ============================================================================
+# Main Backend Class
+# ============================================================================
+
 class LLMSandboxBackend:
+    """Main sandbox backend with async support, error classification, and metrics."""
+    
     def __init__(
         self,
         *,
@@ -105,10 +269,50 @@ class LLMSandboxBackend:
         self._config = config or LLMSandboxBackendConfig()
         self._id = str(uuid.uuid4())
         self._workspace_initialized = False
+        self._stats = SandboxStats()
+        self._lock = asyncio.Lock() if hasattr(asyncio, 'Lock') else None
 
     @property
     def id(self) -> str:
         return self._id
+
+    @property
+    def stats(self) -> SandboxStats:
+        """Get sandbox statistics."""
+        return self._stats
+
+    def get_stats(self) -> dict[str, Any]:
+        """Get statistics as a dictionary (for external API)."""
+        return {
+            "total_executions": self._stats.total_executions,
+            "successful_executions": self._stats.successful_executions,
+            "failed_executions": self._stats.failed_executions,
+            "success_rate": round(self._stats.success_rate, 2),
+            "average_execution_time": round(self._stats.average_execution_time, 3),
+            "total_retries": self._stats.total_retries,
+            "timeout_count": self._stats.timeout_count,
+            "resource_exhausted_count": self._stats.resource_exhausted_count,
+            "syntax_error_count": self._stats.syntax_error_count,
+            "permission_error_count": self._stats.permission_error_count,
+            "file_not_found_count": self._stats.file_not_found_count,
+            "other_error_count": self._stats.other_error_count,
+        }
+
+    def _increment_error_stat(self, error_type: type[Exception]) -> None:
+        """Increment error-specific counter."""
+        error_name = error_type.__name__
+        if "Timeout" in error_name:
+            self._stats.timeout_count += 1
+        elif "ResourceExhausted" in error_name:
+            self._stats.resource_exhausted_count += 1
+        elif "Syntax" in error_name:
+            self._stats.syntax_error_count += 1
+        elif "Permission" in error_name:
+            self._stats.permission_error_count += 1
+        elif "FileNotFound" in error_name:
+            self._stats.file_not_found_count += 1
+        else:
+            self._stats.other_error_count += 1
 
     def _ensure_workspace(self) -> None:
         """Ensure workspace directory exists."""
@@ -121,16 +325,27 @@ class LLMSandboxBackend:
         except Exception:
             pass
 
+    def _run_subprocess(self, bash_command: str) -> tuple[str, int]:
+        """Run a bash command and return (output, exit_code)."""
+        safe_cmd = bash_command.replace("'", "'\\''")
+        cmd = f"import subprocess; r = subprocess.run(['bash', '-c', '{safe_cmd}'], capture_output=True, text=True); print(r.stdout or '', end=''); exit(r.returncode)"
+        result = self._session.run(cmd)
+        return result.stdout, result.exit_code
+
     def execute(
         self,
         command: str,
         *,
         timeout: int | None = None,
+        retry: bool = True,
     ) -> "ExecuteResponse":
+        """Execute a command synchronously."""
         from deepagents.backends.protocol import ExecuteResponse
 
         self._ensure_workspace()
         timeout = timeout or self._config.default_timeout
+        start_time = time.time()
+        
         try:
             result = self._session.run(
                 command,
@@ -139,12 +354,29 @@ class LLMSandboxBackend:
             output = result.stdout or ""
             if result.stderr:
                 output += "\n" + result.stderr
+            
+            elapsed = time.time() - start_time
+            self._stats.total_executions += 1
+            self._stats.successful_executions += 1
+            self._stats.total_execution_time += elapsed
+            
             return ExecuteResponse(
                 output=output,
                 exit_code=result.exit_code,
                 truncated=False,
             )
         except Exception as e:
+            elapsed = time.time() - start_time
+            self._stats.total_executions += 1
+            self._stats.failed_executions += 1
+            self._stats.total_execution_time += elapsed
+            
+            error_type = classify_error(e)
+            self._increment_error_stat(error_type)
+            
+            if retry and isinstance(e, (TimeoutError, ResourceExhaustedError)):
+                self._stats.total_retries += 1
+            
             logger.exception("Execute failed")
             return ExecuteResponse(
                 output=str(e),
@@ -152,12 +384,78 @@ class LLMSandboxBackend:
                 truncated=False,
             )
 
-    def _run_subprocess(self, bash_command: str) -> tuple[str, int]:
-        """Run a bash command and return (output, exit_code)."""
-        safe_cmd = bash_command.replace("'", "'\\''")
-        cmd = f"import subprocess; r = subprocess.run(['bash', '-c', '{safe_cmd}'], capture_output=True, text=True); print(r.stdout or '', end=''); exit(r.returncode)"
-        result = self._session.run(cmd)
-        return result.stdout, result.exit_code
+    async def async_execute(
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,
+    ) -> "ExecuteResponse":
+        """Execute a command asynchronously."""
+        from deepagents.backends.protocol import ExecuteResponse
+
+        self._ensure_workspace()
+        timeout = timeout or self._config.default_timeout
+        start_time = time.time()
+        
+        try:
+            # Check if session supports run_async
+            if hasattr(self._session, 'run_async'):
+                result = await asyncio.wait_for(
+                    self._session.run_async(command, timeout=timeout),
+                    timeout=timeout + 5  # Slight buffer for safety
+                )
+            else:
+                # Fallback to sync execution in a thread pool
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: self._session.run(command, timeout=timeout)
+                )
+            
+            output = result.stdout or ""
+            if result.stderr:
+                output += "\n" + result.stderr
+            
+            elapsed = time.time() - start_time
+            async with asyncio.Lock() if self._lock else contextlib.nullcontext():
+                self._stats.total_executions += 1
+                self._stats.successful_executions += 1
+                self._stats.total_execution_time += elapsed
+            
+            return ExecuteResponse(
+                output=output,
+                exit_code=result.exit_code,
+                truncated=False,
+            )
+        except asyncio.TimeoutError:
+            elapsed = time.time() - start_time
+            async with asyncio.Lock() if self._lock else contextlib.nullcontext():
+                self._stats.total_executions += 1
+                self._stats.failed_executions += 1
+                self._stats.total_execution_time += elapsed
+                self._stats.timeout_count += 1
+            
+            return ExecuteResponse(
+                output=f"Operation timed out after {timeout}s",
+                exit_code=-1,
+                truncated=False,
+            )
+        except Exception as e:
+            elapsed = time.time() - start_time
+            error_type = classify_error(e)
+            
+            async with asyncio.Lock() if self._lock else contextlib.nullcontext():
+                self._stats.total_executions += 1
+                self._stats.failed_executions += 1
+                self._stats.total_execution_time += elapsed
+                self._increment_error_stat(error_type)
+            
+            logger.exception("Async execute failed")
+            return ExecuteResponse(
+                output=str(e),
+                exit_code=-1,
+                truncated=False,
+            )
 
     def upload_files(
         self, files: list[tuple[str, bytes]]
@@ -260,6 +558,17 @@ class LLMSandboxBackend:
             logger.warning(f"read failed for {file_path}: {e}")
             return ReadResult(error=str(e))
 
+    async def async_read(
+        self,
+        file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
+    ) -> ReadResult:
+        """Read a file asynchronously."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.read, file_path, offset, limit
+        )
+
     def write(self, file_path: str, content: str) -> WriteResult:
         self._ensure_workspace()
         try:
@@ -276,6 +585,12 @@ class LLMSandboxBackend:
         except Exception as e:
             logger.warning(f"write failed for {file_path}: {e}")
             return WriteResult(error=str(e))
+
+    async def async_write(self, file_path: str, content: str) -> WriteResult:
+        """Write a file asynchronously."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.write, file_path, content
+        )
 
     def edit(
         self,
@@ -319,6 +634,18 @@ print(occurrences)
         except Exception as e:
             logger.warning(f"edit failed for {file_path}: {e}")
             return EditResult(error=str(e))
+
+    async def async_edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        """Edit a file asynchronously."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.edit, file_path, old_string, new_string, replace_all
+        )
 
     def grep(
         self,
@@ -381,6 +708,22 @@ print(occurrences)
             except Exception:
                 pass
 
+    def __enter__(self) -> "LLMSandboxBackend":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    async def __aenter__(self) -> "LLMSandboxBackend":
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+
+# ============================================================================
+# Factory
+# ============================================================================
 
 class LLMSandboxBackendFactory:
     _pools: dict[str, Any] = {}
@@ -468,11 +811,17 @@ def get_factory() -> LLMSandboxBackendFactory:
     return _factory
 
 
+# ============================================================================
+# Exports
+# ============================================================================
+
 __all__ = [
+    # Classes
     "LLMSandboxBackend",
     "LLMSandboxBackendFactory",
     "LLMSandboxBackendConfig",
-    "get_factory",
+    "SandboxStats",
+    # Data classes
     "FileInfo",
     "LsResult",
     "ReadResult",
@@ -482,4 +831,17 @@ __all__ = [
     "GrepMatch",
     "GrepResult",
     "GlobResult",
+    # Error classes
+    "SandboxError",
+    "TimeoutError",
+    "ResourceExhaustedError",
+    "SyntaxError",
+    "PermissionError",
+    "FileNotFoundError",
+    "ExecutionError",
+    # Functions
+    "get_factory",
+    "classify_error",
+    "async_retry",
+    "sync_retry",
 ]
