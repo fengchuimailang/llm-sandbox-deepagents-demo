@@ -165,6 +165,12 @@ class FileInfo:
     is_dir: bool
     size: int = 0
 
+    def get(self, key: str, default=None):
+        """Allow dict-like access for deepagents filesystem middleware compatibility."""
+        if key == "path":
+            return self.name
+        return getattr(self, key, default)
+
 
 @dataclass
 class LsResult:
@@ -178,6 +184,10 @@ class FileData:
     truncated: bool
     offset: int = 0
     limit: int = 2000
+
+    def __getitem__(self, key: str):
+        """Allow dict-like subscript access for deepagents filesystem middleware."""
+        return getattr(self, key)
 
 
 @dataclass
@@ -707,6 +717,113 @@ print(occurrences)
                 self._session.close()
             except Exception:
                 pass
+
+    # -------------------------------------------------------------------
+    # Async wrappers for SandboxBackendProtocol (a*-prefixed methods)
+    # -------------------------------------------------------------------
+
+    async def awrite(self, file_path: str, content: str) -> WriteResult:
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.write, file_path, content
+        )
+
+    async def aread(
+        self,
+        file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
+    ) -> ReadResult:
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.read, file_path, offset, limit
+        )
+
+    async def als(self, path: str) -> LsResult:
+        return await asyncio.get_event_loop().run_in_executor(None, self.ls, path)
+
+    async def aedit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.edit, file_path, old_string, new_string, replace_all
+        )
+
+    async def aglob(self, pattern: str, path: str = "/workspace") -> GlobResult:
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.glob, pattern, path
+        )
+
+    async def agrep(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> GrepResult:
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.grep, pattern, path, glob
+        )
+
+    async def agrep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> GrepResult:
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.grep, pattern, path, glob
+        )
+
+    async def als_info(self, path: str) -> LsResult:
+        return await asyncio.get_event_loop().run_in_executor(None, self.ls, path)
+
+    async def aglob_info(self, pattern: str, path: str = "/workspace") -> GlobResult:
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.glob, pattern, path
+        )
+
+    async def glob_info(self, pattern: str, path: str = "/workspace") -> GlobResult:
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.glob, pattern, path
+        )
+
+    async def grep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> GrepResult:
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.grep, pattern, path, glob
+        )
+
+    async def aupload_files(
+        self, files: list[tuple[str, bytes]]
+    ) -> list["FileUploadResponse"]:
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.upload_files, files
+        )
+
+    async def adownload_files(self, paths: list[str]) -> list["FileDownloadResponse"]:
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.download_files, paths
+        )
+
+    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResult:
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.execute, command, timeout
+        )
+
+    def ls_info(self, path: str) -> list["FileInfo"]:
+        """List directory with detailed file info (returns list directly)."""
+        result = self.ls(path)
+        return result.entries
+
+    # -------------------------------------------------------------------
+    # Context managers
+    # -------------------------------------------------------------------
 
     def __enter__(self) -> "LLMSandboxBackend":
         return self
