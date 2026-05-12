@@ -12,6 +12,18 @@ from llm_sandbox_deepagents_adapter.llm_sandbox_backend import (
     GrepMatch,
     GrepResult,
     GlobResult,
+    # Error hierarchy
+    SandboxError,
+    TimeoutError,
+    ResourceExhaustedError,
+    SyntaxError,
+    PermissionError,
+    ExecutionError,
+    # Utilities
+    classify_error,
+    async_retry,
+    sync_retry,
+    SandboxStats,
 )
 
 __all__ = [
@@ -28,4 +40,14 @@ __all__ = [
     "GrepMatch",
     "GrepResult",
     "GlobResult",
+    "SandboxError",
+    "TimeoutError",
+    "ResourceExhaustedError",
+    "SyntaxError",
+    "PermissionError",
+    "ExecutionError",
+    "classify_error",
+    "async_retry",
+    "sync_retry",
+    "SandboxStats",
 ]
