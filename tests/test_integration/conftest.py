@@ -61,17 +61,16 @@ def thread_id() -> str:
     return f"test-thread-{uuid.uuid4().hex[:8]}"
 
 
-@pytest.fixture
-def sandbox_backend(thread_id: str):
+@pytest.fixture(scope="session")
+def sandbox_factory():
     """
-    Create a LLMSandboxBackend for a given thread_id (= pool_key).
+    Session-scoped factory for all integration tests.
 
-    Each test gets its own pool so concurrent tests don't interfere.
+    Pre-warms the pool once, all tests share the same factory/pool manager.
     Must run with docker group permissions via sg docker -c.
     """
     import docker
 
-    # Verify docker access before creating backend
     try:
         client = docker.from_env()
         client.ping()
@@ -84,15 +83,40 @@ def sandbox_backend(thread_id: str):
     )
 
     config = LLMSandboxBackendConfig(
-        enable_prewarming=False,
+        enable_prewarming=True,
         default_timeout=30,
-        idle_timeout=120.0,
+        idle_timeout=300.0,
         max_pool_size=5,
-        min_pool_size=1,
+        min_pool_size=2,
     )
 
     factory = get_factory()
-    backend = factory.create_backend(pool_key=thread_id, config=config)
+
+    yield factory
+
+    # Cleanup on session end
+    factory.close_all()
+
+
+@pytest.fixture
+def sandbox_backend(sandbox_factory, thread_id: str):
+    """
+    Per-test backend using the shared factory.
+
+    Each test gets its own pool_key (= thread_id) so backends are isolated,
+    but they all share the same factory and pool manager for efficiency.
+    """
+    from llm_sandbox_deepagents_adapter import LLMSandboxBackendConfig
+
+    config = LLMSandboxBackendConfig(
+        enable_prewarming=False,
+        default_timeout=30,
+        idle_timeout=120.0,
+        max_pool_size=3,
+        min_pool_size=1,
+    )
+
+    backend = sandbox_factory.create_backend(pool_key=thread_id, config=config)
 
     yield backend
 
@@ -102,15 +126,16 @@ def sandbox_backend(thread_id: str):
 @pytest.fixture
 def sandbox_agent(llm_client, sandbox_backend):
     """
-    Create a DeepAgent with the sandbox_backend as its only tool.
+    Create a DeepAgent backed by the LLMSandbox backend.
 
-    The agent exposes execute + file operations to the LLM.
+    Uses the `backend=` parameter to pass the LLMSandboxBackend, which
+    implements SandboxBackendProtocol and exposes execute + file tools.
     """
     from deepagents import create_deep_agent
 
     agent = create_deep_agent(
         model=llm_client,
-        tools=[sandbox_backend],
+        backend=sandbox_backend,
         debug=False,
     )
 

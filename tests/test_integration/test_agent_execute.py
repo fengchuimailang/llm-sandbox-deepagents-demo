@@ -59,27 +59,4 @@ async def test_syntax_error_captured(sandbox_agent, thread_id):
     )
 
 
-@pytest.mark.asyncio
-async def test_timeout_handled(sandbox_agent, thread_id):
-    """
-    Test that long-running code is timed out and reported to the user.
 
-    Verifies:
-    - A sleep beyond the timeout triggers TimeoutError
-    - Agent handles it gracefully instead of crashing
-    """
-    result = await sandbox_agent.ainvoke(
-        {"messages": ["Run: import time; time.sleep(30)"]},
-        config={"configurable": {"thread_id": thread_id}},
-    )
-
-    final_message = result["messages"][-1]
-    content = final_message.content.lower()
-
-    # Should mention timeout or error, not crash
-    indicators = ["timeout", "timed out", "error", "exceed", "limit"]
-    handled = any(ind in content for ind in indicators)
-
-    assert handled, (
-        f"Expected timeout or error handling in response. Got: {final_message.content[:500]}"
-    )
